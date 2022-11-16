@@ -10,7 +10,7 @@ class ScramSha256PasswordTest extends TestCase
 {
     public function testScramSha256Login()
     {
-        $client = new Client([
+        $client = self::clientFromEnv([
             "user" => 'scram_user',
             "database" => $this->getDbName(),
             "auto_disconnect" => true,

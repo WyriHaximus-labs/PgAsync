@@ -11,7 +11,7 @@ class ClientTest extends TestCase
 {
     public function testClientReusesIdleConnection()
     {
-        $client = new Client(["user" => $this->getDbUser(), "password" => $this::getDbUser(), "database" => $this::getDbName()], $this->getLoop());
+        $client = self::clientFromEnv(["user" => $this->getDbUser(), "password" => $this::getDbUser(), "database" => $this::getDbName()], $this->getLoop());
         
         $hello = null;
         
@@ -79,7 +79,7 @@ class ClientTest extends TestCase
 
     public function testAutoDisconnect()
     {
-        $client = new Client([
+        $client = self::clientFromEnv([
             "user"            => $this->getDbUser(),
             "password"        => $this::getDbUser(),
             "database"        => $this::getDbName(),
@@ -114,7 +114,7 @@ class ClientTest extends TestCase
 
     public function testSendingTwoQueriesRepeatedlyOnlyCreatesTwoConnections()
     {
-        $client = new Client([
+        $client = self::clientFromEnv([
             "user"            => $this->getDbUser(),
             "password"        => $this::getDbUser(),
             "database"        => $this::getDbName(),
@@ -156,7 +156,7 @@ class ClientTest extends TestCase
 
     public function testMaxConnections()
     {
-        $client = new Client([
+        $client = self::clientFromEnv([
             "user"            => $this->getDbUser(),
             "password"        => $this::getDbUser(),
             "database"        => $this::getDbName(),
@@ -197,7 +197,7 @@ class ClientTest extends TestCase
 
     public function testListen()
     {
-        $client = new Client([
+        $client = self::clientFromEnv([
             "user"            => $this->getDbUser(),
             "password"        => $this::getDbUser(),
             "database"        => $this::getDbName(),

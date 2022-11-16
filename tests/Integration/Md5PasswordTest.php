@@ -9,7 +9,7 @@ class Md5PasswordTest extends TestCase
 {
     public function testMd5Login()
     {
-        $client = new Client([
+        $client = self::clientFromEnv([
             "user" => "pgasyncpw",
             "database" => $this->getDbName(),
             "auto_disconnect" => true,
