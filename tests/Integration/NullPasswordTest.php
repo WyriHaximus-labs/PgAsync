@@ -11,7 +11,7 @@ class NullPasswordTest extends TestCase
     {
         $this->markTestSkipped('Not using null password anymore. Maybe should setup tests to twst this again.');
 
-        $client = new Client([
+        $client = self::clientFromEnv([
             "user"     => $this::getDbUser(),
             "database" => $this::getDbName(),
             "password" => null

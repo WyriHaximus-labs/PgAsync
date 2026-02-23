@@ -5,8 +5,8 @@ use PgAsync\Tests\TestCase;
 use React\Dns\Query\ExecutorInterface;
 use React\Dns\Resolver\Resolver;
 use React\Promise\Deferred;
-use React\Promise\RejectedPromise;
-use React\Socket\Connector;
+use WyriHaximus\React\Socket\Connector;
+use function React\Promise\reject;
 
 class ClientTest extends TestCase
 {
@@ -22,7 +22,7 @@ class ClientTest extends TestCase
 
         $resolver = new Resolver($executor);
 
-        $conn = new Client([
+        $conn = self::clientFromEnv([
             "database" => $this->getDbName(),
             "user" => $this->getDbUser(),
             "host" => 'somenonexistenthost.'
@@ -54,11 +54,11 @@ class ClientTest extends TestCase
 
         $executor
             ->method('query')
-            ->willReturn(new RejectedPromise(new React\Dns\RecordNotFoundException()));
+            ->willReturn(reject(new React\Dns\RecordNotFoundException()));
 
         $resolver = new Resolver($executor);
 
-        $conn = new Client([
+        $conn = self::clientFromEnv([
             "database" => $this->getDbName(),
             "user" => $this->getDbUser(),
             "host" => 'somenonexistenthost.'

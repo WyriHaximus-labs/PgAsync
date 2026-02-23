@@ -12,46 +12,41 @@ jobs:
     outputs:
       version: ${{ steps.supported-versions-matrix.outputs.version }}
     steps:
-      - uses: actions/checkout@v1
+      - uses: actions/checkout@v4
       - id: supported-versions-matrix
         uses: WyriHaximus/github-action-composer-php-versions-in-range@v1
   tests:
-    services:
-      postgres:
-        image: postgres:${{ matrix.postgres }}
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_INITDB_ARGS: --auth-host=md5
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-    name: Testing on PHP ${{ matrix.php }} with ${{ matrix.composer }} dependency preference against Postgres ${{ matrix.postgres }}
+    name: Testing on PHP ${{ matrix.php }} with ${{ matrix.composer }} dependency preference against Postgres ${{ matrix.postgres }} with TLS ${{ matrix.tls }}
     strategy:
       fail-fast: false
       matrix:
         php: ${{ fromJson(needs.supported-versions-matrix.outputs.version) }}
-        postgres: [12, 13, 14, 15]
+        postgres: [16, 17]
         composer: [lowest, locked, highest]
+        tls: ["disable", "require", "verify-ca"]
     needs:
       - supported-versions-matrix
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - uses: ikalnytskyi/action-setup-postgres@v7
+        with:
+          postgres-version: ${{ matrix.postgres }}
+          ssl: ${{ matrix.tls == 'disable' && false || true }}
+        id: postgres
       - run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE USER pgasync"
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "ALTER ROLE pgasync PASSWORD 'pgasync'"
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE USER pgasyncpw"
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "ALTER ROLE pgasyncpw PASSWORD 'example_password'"
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE USER scram_user"
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "SET password_encryption='scram-sha-256';ALTER ROLE scram_user PASSWORD 'scram_password'"
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE pgasync_test OWNER pgasync"
+          psql -c "CREATE USER pgasync"
+          psql -c "ALTER ROLE pgasync PASSWORD 'pgasync'"
+          psql -c "CREATE USER pgasyncpw"
+          psql -c "ALTER ROLE pgasyncpw PASSWORD 'example_password'"
+          psql -c "CREATE USER scram_user"
+          psql -c "SET password_encryption='scram-sha-256';ALTER ROLE scram_user PASSWORD 'scram_password'"
+          psql -c "CREATE DATABASE pgasync_test OWNER pgasync"
+#          cat tests/test_db.sql | xargs -I % psql -c "%"
+        env:
+          PGSERVICE: "${{ steps.postgres.outputs.service-name }}"
+      - run: |
           PGPASSWORD=pgasync psql -h localhost -U pgasync -f tests/test_db.sql pgasync_test
-#          PGPASSWORD=postgres cat tests/test_db.sql | xargs -I % psql -h localhost -U postgres -c "%"
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
@@ -60,4 +55,8 @@ jobs:
         with:
           dependency-versions: ${{ matrix.composer }}
 #      - run: vendor/bin/phpunit --testdox
+      - run: echo "dsn=postgresql://pgasync:pgasync@localhost/pgasync_test?tlsmode=${{ matrix.tls }}&tlsservercert=${{ steps.postgres.outputs.certificate-path }}" >> $GITHUB_OUTPUT
+        id: dsn
       - run: vendor/bin/phpunit
+        env:
+          TEST_POSTGRES_DSN: ${{ steps.dsn.outputs.dsn }}
