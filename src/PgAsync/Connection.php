@@ -155,7 +155,7 @@ class Connection extends EventEmitter
     private $tlsConnectorFlags = [];
     private $password;
 
-    public function __construct(array $parameters, LoopInterface $loop, ConnectorInterface $connector = null)
+    public function __construct(array $parameters, LoopInterface $loop, ?ConnectorInterface $connector = null)
     {
         if (!is_array($parameters) ||
             !isset($parameters['user']) ||
@@ -572,7 +572,7 @@ class Connection extends EventEmitter
         $this->addColumns($message->getColumns());
     }
 
-    private function failAllCommandsWith(\Throwable $e = null)
+    private function failAllCommandsWith(?\Throwable $e = null)
     {
         $e = $e ?: new \Exception('unknown error');
 
@@ -642,7 +642,7 @@ class Connection extends EventEmitter
     public function query($query): Observable
     {
         return new AnonymousObservable(
-            function (ObserverInterface $observer, SchedulerInterface $scheduler = null) use ($query) {
+            function (ObserverInterface $observer, ?SchedulerInterface $scheduler = null) use ($query) {
                 if ($this->connStatus === $this::CONNECTION_NEEDED) {
                     $this->start();
                 }
@@ -692,7 +692,7 @@ class Connection extends EventEmitter
          */
 
         return new AnonymousObservable(
-            function (ObserverInterface $observer, SchedulerInterface $scheduler = null) use ($queryString, $parameters) {
+            function (ObserverInterface $observer, ?SchedulerInterface $scheduler = null) use ($queryString, $parameters) {
                 if ($this->connStatus === $this::CONNECTION_NEEDED) {
                     $this->start();
                 }

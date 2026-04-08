@@ -38,7 +38,7 @@ class Client
     /** @var Connection */
     private $listenConnection;
 
-    public function __construct(array $parameters, LoopInterface $loop = null, ConnectorInterface $connector = null)
+    public function __construct(array $parameters, ?LoopInterface $loop = null, ?ConnectorInterface $connector = null)
     {
         $this->loop      = $loop ?: \EventLoop\getLoop();
         $this->connector = $connector;
