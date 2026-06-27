@@ -4,154 +4,143 @@ namespace PgAsync;
 
 use PgAsync\Message\NotificationResponse;
 use React\EventLoop\LoopInterface;
+use React\Promise\PromiseInterface;
 use React\Socket\ConnectorInterface;
 use Rx\Observable;
 use Rx\Subject\Subject;
 
 class Client
 {
-    /** @var  string */
-    protected $connectString;
-
     /** @var LoopInterface */
     protected $loop;
 
-    protected $params = [];
-
-    private $parameters = [];
-
-    /** @var Connection[] */
-    private $connections = [];
-
-    /** @var boolean */
-    private $autoDisconnect;
-
-    /** @var ConnectorInterface */
-    private $connector;
-
-    /** @var int */
-    private $maxConnections = 5;
+    /** @var ConnectionPool */
+    private $connectionPool;
 
     /** @var Subject[] */
     private $listeners = [];
 
-    /** @var Connection */
+    /** @var Connection|null */
     private $listenConnection;
 
     public function __construct(array $parameters, ?LoopInterface $loop = null, ?ConnectorInterface $connector = null)
     {
-        $this->loop      = $loop ?: \EventLoop\getLoop();
-        $this->connector = $connector;
+        $this->loop = $loop ?: \EventLoop\getLoop();
+
+        $autoDisconnect = false;
+        $maxConnections = 5;
 
         if (isset($parameters['auto_disconnect'])) {
-            $this->autoDisconnect = $parameters['auto_disconnect'];
+            $autoDisconnect = $parameters['auto_disconnect'];
         }
 
         if (isset($parameters['max_connections'])) {
             if (!is_int($parameters['max_connections'])) {
                 throw new \InvalidArgumentException('`max_connections` must an be integer greater than zero.');
             }
-            $this->maxConnections = $parameters['max_connections'];
+            $maxConnections = $parameters['max_connections'];
             unset($parameters['max_connections']);
-            if ($this->maxConnections < 1) {
+            if ($maxConnections < 1) {
                 throw new \InvalidArgumentException('`max_connections` must be greater than zero.');
             }
         }
 
-        $this->parameters = $parameters;
+        $this->connectionPool = new ConnectionPool(
+            $parameters,
+            $this->loop,
+            $connector,
+            $autoDisconnect,
+            $maxConnections
+        );
     }
 
     public function query($s)
     {
-        return Observable::defer(function () use ($s) {
-            $conn = $this->getLeastBusyConnection();
-
+        return $this->connectionPool->acquire(false)->flatMap(function (Connection $conn) use ($s) {
             return $conn->query($s);
+        });
+    }
+
+    public function beginTransaction(): Observable
+    {
+        return $this->connectionPool->acquire(true)->flatMap(function (Connection $connection) {
+            return $connection->queryUntilReady('BEGIN')->flatMap(function ($status) use ($connection) {
+                if ($status !== 'T') {
+                    $this->connectionPool->release($connection);
+
+                    return Observable::error(new \RuntimeException('Expected transaction status T after BEGIN'));
+                }
+
+                return Observable::of($this->createTransaction($connection));
+            })->catch(function (\Throwable $e) use ($connection) {
+                $this->connectionPool->release($connection);
+
+                return Observable::error($e);
+            });
+        });
+    }
+
+    private function createTransaction(Connection $connection): Transaction
+    {
+        return new Transaction(
+            $connection,
+            function () use ($connection) {
+                $this->connectionPool->release($connection);
+            }
+        );
+    }
+
+    /**
+     * @param callable(Transaction): (Observable|PromiseInterface|mixed) $fn
+     */
+    public function transaction(callable $fn): Observable
+    {
+        return $this->beginTransaction()->flatMap(function (Transaction $tx) use ($fn) {
+            try {
+                $result = $fn($tx);
+            } catch (\Throwable $e) {
+                return $tx->rollback()->concat(Observable::error($e));
+            }
+
+            return $this->normalizeTransactionResult($result)
+                ->concat($tx->commit())
+                ->catch(function (\Throwable $e) use ($tx) {
+                    return $tx->rollback()->concat(Observable::error($e));
+                });
         });
     }
 
     public function executeStatement(string $queryString, array $parameters = [])
     {
-        return Observable::defer(function () use ($queryString, $parameters) {
-            $conn = $this->getLeastBusyConnection();
-
+        return $this->connectionPool->acquire(false)->flatMap(function (Connection $conn) use ($queryString, $parameters) {
             return $conn->executeStatement($queryString, $parameters);
         });
     }
 
-    private function getLeastBusyConnection(): Connection
+    private function normalizeTransactionResult($result): Observable
     {
-        if (count($this->connections) === 0) {
-            // try to spin up another connection to return
-            $conn = $this->createNewConnection();
-            if ($conn === null) {
-                throw new \Exception('There are no connections. Cannot find least busy one and could not create a new one.');
-            }
-
-            return $conn;
+        if ($result instanceof Observable) {
+            return $result;
         }
 
-        $min = $this->connections[0];
-
-        foreach ($this->connections as $connection) {
-            // if this connection is idle - just return it
-            if ($connection->getBacklogLength() === 0 && $connection->getState() === Connection::STATE_READY) {
-                return $connection;
-            }
-
-            if ($min->getBacklogLength() > $connection->getBacklogLength()) {
-                $min = $connection;
-            }
+        if ($result instanceof PromiseInterface) {
+            return Observable::fromPromise($result);
         }
 
-        if (count($this->connections) < $this->maxConnections) {
-            return $this->createNewConnection();
-        }
-
-        return $min;
+        return Observable::of($result);
     }
 
-    public function getIdleConnection(): Connection
+    /**
+     * @return Connection|null
+     */
+    public function getIdleConnection()
     {
-        // we want to get the first available one
-        // this will keep the connections at the front the busiest
-        // and then we can add an idle timer to the connections
-        foreach ($this->connections as $connection) {
-            // need to figure out different states (in trans etc.)
-            if ($connection->getState() === Connection::STATE_READY) {
-                return $connection;
-            }
-        }
-
-        if (count($this->connections) >= $this->maxConnections) {
-            return null;
-        }
-
-        return $this->createNewConnection();
-    }
-
-    private function createNewConnection()
-    {
-        // no idle connections were found - spin up new one
-        $connection = new Connection($this->parameters, $this->loop, $this->connector);
-        if ($this->autoDisconnect) {
-            return $connection;
-        }
-
-        $this->connections[] = $connection;
-
-        $connection->on('close', function () use ($connection) {
-            $this->connections = array_values(array_filter($this->connections, function ($c) use ($connection) {
-                return $connection !== $c;
-            }));
-        });
-
-        return $connection;
+        return $this->connectionPool->getIdleConnection();
     }
 
     public function getConnectionCount(): int
     {
-        return count($this->connections);
+        return $this->connectionPool->getConnectionCount();
     }
 
     /**
@@ -162,9 +151,7 @@ class Client
      */
     public function closeNow()
     {
-        foreach ($this->connections as $connection) {
-            $connection->disconnect();
-        }
+        $this->connectionPool->closeAll();
     }
 
     public function listen(string $channel): Observable
@@ -186,7 +173,7 @@ class Client
 
         $this->listeners[$channel] = Observable::defer(function () use ($channel) {
             if ($this->listenConnection === null) {
-                $this->listenConnection = $this->createNewConnection();
+                $this->listenConnection = $this->connectionPool->createConnection();
             }
 
             if ($this->listenConnection === null) {

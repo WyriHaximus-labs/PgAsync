@@ -149,6 +149,9 @@ class Connection extends EventEmitter
      */
     private $backendTransactionStatus = 'UNKNOWN';
 
+    /** @var array<int, array{resolve: callable, reject: callable}> */
+    private $readyForQueryWaiters = [];
+
     /** @var  bool */
     private $auto_disconnect = false;
     private $tls = self::TLS_MODE_PREFER;
@@ -295,6 +298,65 @@ class Connection extends EventEmitter
                 return $a;
             },
             0);
+    }
+
+    public function getBackendTransactionStatus(): string
+    {
+        return $this->backendTransactionStatus;
+    }
+
+    /**
+     * @return Observable<string>
+     */
+    public function whenReadyForQuery(): Observable
+    {
+        if ($this->queryState === static::STATE_READY) {
+            return Observable::of($this->backendTransactionStatus);
+        }
+
+        return new AnonymousObservable(function (ObserverInterface $observer) {
+            $this->readyForQueryWaiters[] = [
+                'resolve' => function ($status) use ($observer) {
+                    $observer->onNext($status);
+                    $observer->onCompleted();
+                },
+                'reject' => function ($e) use ($observer) {
+                    $observer->onError($e);
+                },
+            ];
+
+            return new EmptyDisposable();
+        });
+    }
+
+    /**
+     * @return Observable<string>
+     */
+    public function queryUntilReady(string $query): Observable
+    {
+        return $this->query($query)
+            ->concat($this->whenReadyForQuery())
+            ->takeLast(1);
+    }
+
+    private function resolveReadyForQueryWaiters(string $status)
+    {
+        $waiters = $this->readyForQueryWaiters;
+        $this->readyForQueryWaiters = [];
+
+        foreach ($waiters as $waiter) {
+            $waiter['resolve']($status);
+        }
+    }
+
+    private function rejectReadyForQueryWaiters(\Throwable $e)
+    {
+        $waiters = $this->readyForQueryWaiters;
+        $this->readyForQueryWaiters = [];
+
+        foreach ($waiters as $waiter) {
+            $waiter['reject']($e);
+        }
     }
 
     public function onData($data)
@@ -564,6 +626,9 @@ class Connection extends EventEmitter
         $this->connStatus     = $this::CONNECTION_OK;
         $this->queryState     = $this::STATE_READY;
         $this->currentCommand = null;
+        $this->backendTransactionStatus = $message->getBackendTransactionStatus();
+        $this->resolveReadyForQueryWaiters($this->backendTransactionStatus);
+        $this->emit('ready');
         $this->processQueue();
     }
 
@@ -577,6 +642,7 @@ class Connection extends EventEmitter
         $e = $e ?: new \Exception('unknown error');
 
         $this->notificationSubject->onError($e);
+        $this->rejectReadyForQueryWaiters($e);
 
         while (count($this->commandQueue) > 0) {
             $c = array_shift($this->commandQueue);

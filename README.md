@@ -114,19 +114,72 @@ With [composer](https://getcomposer.org/) install into you project with:
 Install pgasync:
 ```composer require voryx/pgasync```
 
+## Example - Transactions
+
+When using transactions with connection pooling, configure `max_connections` so normal
+queries and transactions share the pool. Transactions reserve a single connection for
+their duration; if the pool is full, both transactions and regular queries wait until a
+connection becomes available.
+
+```php
+$client = new PgAsync\Client([
+    "host"            => "127.0.0.1",
+    "port"            => "5432",
+    "user"            => "matt",
+    "database"        => "matt",
+    "max_connections" => 5,
+]);
+```
+
+Use `transaction()` for a scoped transaction that auto-commits on success and rolls back on failure:
+
+```php
+$client->transaction(function (PgAsync\Transaction $tx) {
+    return $tx->executeStatement(
+        'INSERT INTO invoices(inv_no, customer_id, amount) VALUES ($1, $2, $3)',
+        ['1234A', 1, 35.75]
+    )->concat(
+        $tx->query('SELECT SUM(amount) AS balance FROM invoices WHERE customer_id = 1')
+    );
+})->subscribe(
+    function () {
+        echo "Committed.\n";
+    },
+    function ($e) {
+        echo "Rolled back: " . $e->getMessage() . "\n";
+    }
+);
+```
+
+For manual control, use `beginTransaction()` and call `commit()` or `rollback()` yourself:
+
+```php
+$client->beginTransaction()->flatMap(function (PgAsync\Transaction $tx) {
+    return $tx->executeStatement('INSERT INTO channel(name) VALUES ($1)', ['example'])
+        ->concat($tx->query('SELECT COUNT(*) AS c FROM channel'))
+        ->concat($tx->commit());
+})->subscribe(
+    function () {
+        echo "Committed.\n";
+    },
+    function ($e) {
+        echo "Failed: " . $e->getMessage() . "\n";
+    }
+);
+```
+
+All queries inside a transaction run on a single reserved connection. Regular `$client->query()` calls may use other pooled connections and run in parallel. When every connection is reserved for an open transaction, further queries and transactions wait until one is released.
+
 ## What it can do
 - Run queries (CREATE, UPDATE, INSERT, SELECT, DELETE)
 - Queue commands
 - Return results asynchronously (using Observables - you get data one row at a time as it comes from the db server)
 - Prepared statements (as parameterized queries)
 - Connection pooling (basic pooling)
-
-## What it can't quite do yet
-- Transactions (Actually though, just grab a connection and you can run your transaction on that single connection)
+- Transactions (scoped and explicit)
 
 ## What's next
 - Add more testing
-- Transactions
 - Take over the world
 
 ## Keep in mind
